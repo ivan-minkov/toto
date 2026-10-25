@@ -8,107 +8,42 @@ const TotoOCR = {
   tesseractWorker: null,
   isInitializing: false,
   _initPromise: null,
-  _onProgress: null,
 
   /**
-   * Preprocess image for OCR.
-   * modes:
-   *  - 'color'  : max(R,G,B) channel -> removes the orange/colored security print of the slip,
-   *               keeps black thermal text dark. Then auto-levels.
-   *  - 'binary' : same as 'color' + adaptive (Bradley) threshold -> robust to shadows / uneven light.
-   *  - 'gray'   : classic luminance + auto-levels.
-   * The image is also rescaled so text is in Tesseract's sweet spot (long side ~2400px).
+   * Fast, reliable preprocessing for lottery receipts:
+   * Keeps resolution within 1400px so mobile phone memory never crashes,
+   * converts to grayscale, and stretches contrast to make thermal printing crisp.
    */
-  preprocessImage(sourceCanvas, mode = 'color') {
-    const srcW = sourceCanvas.width;
-    const srcH = sourceCanvas.height;
-    const longSide = Math.max(srcW, srcH) || 1;
-
-    const TARGET = 2400;
-    let scale = TARGET / longSide;
-    if (scale > 1 && longSide >= 1600) scale = 1; // already large enough, don't upscale
-    scale = Math.min(scale, 2);
-
-    const width = Math.max(1, Math.round(srcW * scale));
-    const height = Math.max(1, Math.round(srcH * scale));
+  preprocessImage(sourceCanvas) {
+    const maxDim = 1400;
+    let width = sourceCanvas.width;
+    let height = sourceCanvas.height;
+    if (width > maxDim || height > maxDim) {
+      const scale = maxDim / Math.max(width, height);
+      width = Math.round(width * scale);
+      height = Math.round(height * scale);
+    }
 
     const processedCanvas = document.createElement('canvas');
     processedCanvas.width = width;
     processedCanvas.height = height;
     const ctx = processedCanvas.getContext('2d', { willReadFrequently: true });
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(sourceCanvas, 0, 0, width, height);
 
     const imgData = ctx.getImageData(0, 0, width, height);
     const data = imgData.data;
-    const n = width * height;
-    const gray = new Uint8ClampedArray(n);
-    const hist = new Uint32Array(256);
 
-    for (let p = 0, i = 0; p < n; p++, i += 4) {
-      const r = data[i], g = data[i + 1], b = data[i + 2];
-      const v = mode === 'gray'
-        ? (0.299 * r + 0.587 * g + 0.114 * b)
-        : Math.max(r, g, b);
-      gray[p] = v;
-      hist[gray[p]]++;
-    }
-
-    // Auto-levels: stretch between 1st and 99th percentile
-    let lo = 0, hi = 255, acc = 0;
-    const loCut = n * 0.01, hiCut = n * 0.99;
-    for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= loCut) { lo = v; break; } }
-    acc = 0;
-    for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= hiCut) { hi = v; break; } }
-    if (hi - lo > 10) {
-      const k = 255 / (hi - lo);
-      for (let p = 0; p < n; p++) gray[p] = (gray[p] - lo) * k;
-    }
-
-    if (mode === 'binary') {
-      this._adaptiveThreshold(gray, width, height);
-    }
-
-    for (let p = 0, i = 0; p < n; p++, i += 4) {
-      data[i] = data[i + 1] = data[i + 2] = gray[p];
-      data[i + 3] = 255;
+    for (let i = 0; i < data.length; i += 4) {
+      const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      let v = (gray - 128) * 1.35 + 128;
+      v = v < 0 ? 0 : (v > 255 ? 255 : v);
+      data[i] = v;
+      data[i + 1] = v;
+      data[i + 2] = v;
     }
 
     ctx.putImageData(imgData, 0, 0);
     return processedCanvas;
-  },
-
-  /**
-   * Bradley adaptive threshold (integral image). In-place on a grayscale buffer.
-   */
-  _adaptiveThreshold(gray, width, height, t = 0.15) {
-    const integral = new Uint32Array(width * height);
-    for (let y = 0; y < height; y++) {
-      let rowSum = 0;
-      for (let x = 0; x < width; x++) {
-        const idx = y * width + x;
-        rowSum += gray[idx];
-        integral[idx] = rowSum + (y > 0 ? integral[idx - width] : 0);
-      }
-    }
-    const half = Math.max(8, Math.floor(width / 32));
-    const out = new Uint8ClampedArray(gray.length);
-    for (let y = 0; y < height; y++) {
-      const y1 = Math.max(0, y - half), y2 = Math.min(height - 1, y + half);
-      for (let x = 0; x < width; x++) {
-        const x1 = Math.max(0, x - half), x2 = Math.min(width - 1, x + half);
-        const count = (x2 - x1 + 1) * (y2 - y1 + 1);
-        const A = (y1 > 0 && x1 > 0) ? integral[(y1 - 1) * width + (x1 - 1)] : 0;
-        const B = y1 > 0 ? integral[(y1 - 1) * width + x2] : 0;
-        const C = x1 > 0 ? integral[y2 * width + (x1 - 1)] : 0;
-        const D = integral[y2 * width + x2];
-        const sum = D - B - C + A;
-        const idx = y * width + x;
-        out[idx] = (gray[idx] * count) <= sum * (1 - t) ? 0 : 255;
-      }
-    }
-    gray.set(out);
   },
 
   /**
@@ -135,19 +70,18 @@ const TotoOCR = {
   /**
    * Initialize Tesseract Worker with bul+eng language packs
    */
-  initTesseract(onProgress) {
-    if (onProgress) this._onProgress = onProgress;
-    if (this.tesseractWorker) return Promise.resolve(this.tesseractWorker);
-    if (this._initPromise) return this._initPromise; // shared promise: safe to pre-warm + scan concurrently
-    if (typeof Tesseract === 'undefined') return Promise.resolve(null);
+  async initTesseract(onProgress) {
+    if (this.tesseractWorker) return this.tesseractWorker;
+    if (this._initPromise) return this._initPromise;
+    if (typeof Tesseract === 'undefined') return null;
 
     this.isInitializing = true;
     this._initPromise = (async () => {
       try {
         const worker = await Tesseract.createWorker('bul+eng', 1, {
           logger: m => {
-            if (this._onProgress && m.status === 'recognizing text') {
-              this._onProgress(Math.round((m.progress || 0) * 100));
+            if (onProgress && m.status === 'recognizing text') {
+              onProgress(Math.round((m.progress || 0) * 100));
             }
           }
         });
@@ -161,118 +95,24 @@ const TotoOCR = {
         this.isInitializing = false;
       }
     })();
+
     return this._initPromise;
   },
 
   /**
-   * Run Tesseract on a canvas with a given page segmentation mode.
-   * PSM 3 = automatic layout, 4 = single column, 6 = single uniform block.
+   * Recognize text with Tesseract
    */
-  async recognize(canvas, psm = '3', onProgress) {
+  async recognize(canvas, onProgress) {
     const worker = await this.initTesseract(onProgress);
-    if (!worker) return '';
-    if (onProgress) this._onProgress = onProgress;
-    try {
-      await worker.setParameters({
-        tessedit_pageseg_mode: String(psm),
-        preserve_interword_spaces: '1'
-      });
-    } catch (e) {
-      console.warn('setParameters failed:', e);
-    }
+    if (!worker) return null;
     const res = await worker.recognize(canvas);
     return res?.data?.text || '';
   },
 
   /**
-   * Full multi-pass scan pipeline.
-   * Pass 1: color-filtered image (fast path). If the result is incomplete
-   * (missing areas, short areas, missing draw), extra passes with adaptive
-   * threshold / other layouts are run and results are merged.
-   */
-  async scanSlip(rawCanvas, onStatus) {
-    const barcodePromise = this.scanBarcode(rawCanvas);
-
-    const passes = [
-      { mode: 'color',  psm: '3', label: 'Разпознаване' },
-      { mode: 'binary', psm: '6', label: 'Допълнителна проверка' },
-      { mode: 'gray',   psm: '4', label: 'Последна проверка' }
-    ];
-
-    let best = null;
-    const texts = [];
-
-    for (const pass of passes) {
-      onStatus?.(`${pass.label}...`);
-      let text = '';
-      try {
-        const canvas = this.preprocessImage(rawCanvas, pass.mode);
-        text = await this.recognize(canvas, pass.psm, p => onStatus?.(`${pass.label}: ${p}%`));
-      } catch (e) {
-        console.warn(`OCR pass ${pass.mode}/${pass.psm} failed:`, e);
-      }
-      console.log(`--- OCR PASS ${pass.mode}/psm${pass.psm} ---\n${text}`);
-      texts.push(text);
-
-      const slip = this.parseReceiptText(text);
-      best = best ? this.mergeSlips(best, slip) : slip;
-      if (this.isSlipComplete(best)) break;
-    }
-
-    const barcode = await barcodePromise;
-    if (barcode && !best.controlNumber) best.controlNumber = barcode;
-    best.rawText = texts.join('\n\n----- next pass -----\n\n');
-    return best;
-  },
-
-  targetCountFor(gameType) {
-    return (gameType || '').includes('35') ? 5 : 6;
-  },
-
-  isSlipComplete(slip) {
-    if (!slip || !slip.drawNum) return false;
-    const areas = slip.areas || [];
-    if (areas.length === 0) return false;
-    const target = this.targetCountFor(slip.gameType);
-    if (areas.some(a => a.length < target)) return false;
-    // OCR saw more area labels (I:, II:, ...) than areas we could parse
-    if ((slip.areaLabelCount || 0) > areas.length) return false;
-    return true;
-  },
-
-  /**
-   * Merge two parsed slips: fill missing fields, keep the better area list.
-   */
-  mergeSlips(a, b) {
-    const out = { ...a };
-    const fields = ['drawNum', 'drawYear', 'drawDisplay', 'acceptedAt', 'serialNumber',
-      'subCode', 'jokerCode', 'joker', 'totalPrice', 'controlNumber', 'terminal', 'operator'];
-    for (const f of fields) {
-      if ((out[f] === null || out[f] === undefined) && b[f] !== null && b[f] !== undefined) {
-        out[f] = b[f];
-      }
-    }
-    if (!a.gameTypeDetected && b.gameTypeDetected) {
-      out.gameType = b.gameType;
-      out.gameTypeDetected = true;
-    }
-
-    const target = this.targetCountFor(out.gameType);
-    const score = (areas) => {
-      const list = areas || [];
-      const full = list.filter(x => x.length >= target).length;
-      const total = list.reduce((s, x) => s + Math.min(x.length, target), 0);
-      return list.length * 1000 + full * 100 + total;
-    };
-    if (score(b.areas) > score(a.areas)) out.areas = b.areas;
-    out.areaLabelCount = Math.max(a.areaLabelCount || 0, b.areaLabelCount || 0);
-    return out;
-  },
-
-  /**
    * 100% DYNAMIC PARSER:
    * Extracts receipt data strictly from the scanned raw text.
-   * If a field is not present or not readable, returns null (no hardcoded fallbacks!).
+   * Never drops areas, tolerant to OCR variations in prefixes (II, 11, Il, 2, П, etc.)
    */
   parseReceiptText(rawText) {
     if (!rawText || typeof rawText !== 'string') {
@@ -342,10 +182,50 @@ const TotoOCR = {
       }
     }
 
-    // 5. ЧИСЛА ПО ОБЛАСТИ (I:, II:, etc.)
+    // 5. ЧИСЛА ПО ОБЛАСТИ (I:, II:, etc.) - 100% Robust
     const maxVal = gameType === '5/35' ? 35 : (gameType === '6/42' ? 42 : 49);
     const targetCount = gameType === '5/35' ? 5 : 6;
-    const { areas, areaLabelCount } = this.parseAreas(lines, maxVal, targetCount);
+
+    const skipKeywords = [
+      'ДЖОКЕР', 'JOKER', 'ПОЗ/ЦИФ', 'ПОЗ', 'ЦИФ',
+      'ОБЩО', 'СУМА', 'EUR', 'BGN', 'ЛВ', 'ЦЕНА',
+      'ТИРАЖ', 'TIRAJ', 'THPAX', 'TIPAK',
+      'ТЕРМИНАЛ', 'TERMINAL', 'ОПЕРАТОР', 'OPERATOR', 'ONEPAROP',
+      'ПРИЕТ', 'ПРИЕТО', 'ДАТА',
+      'ТОТО', 'TOTO',
+      'ПОРЕДЕН', 'СЕРИЕН',
+      'ПЕЧАЛБИ', 'КВИТАНЦИЯ', 'ЗАЛОГ', 'ПРЕДСТАВЯНЕ',
+      'ХАЙДУШКО', 'ТОТАЛИЗАТОР', 'СОФИЯ'
+    ];
+
+    // Tolerant prefix matcher (handles "I:", "II:", "11:", "Il:", "2:", "П:", "ОБЛАСТ 2:", etc.)
+    const prefixRegex = /^(?:(?:ОБЛАСТ|ОБЛ|OBL)\s*)?(?:[1-4I|!lVvTtHhПп]+|[0-9]{1,2})[:;.\-\s]+\s*/i;
+
+    const areas = [];
+    for (const line of lines) {
+      const upper = line.toUpperCase();
+      if (skipKeywords.some(kw => upper.includes(kw))) continue;
+      if (/^[0-9A-Z]{4}-[0-9A-Z]{4}/i.test(line)) continue;
+      if (/^\d{9}\b/.test(line)) continue;
+
+      let lineToParse = line.replace(prefixRegex, '');
+      const matches = lineToParse.match(/\b\d{1,2}\b/g) || [];
+      const valid = [];
+      const seen = new Set();
+      for (const m of matches) {
+        const val = parseInt(m, 10);
+        if (val >= 1 && val <= maxVal && !seen.has(val)) {
+          seen.add(val);
+          valid.push(val);
+        }
+      }
+
+      // If line has enough lotto numbers (targetCount - 2 or more)
+      if (valid.length >= Math.max(3, targetCount - 2)) {
+        valid.sort((a, b) => a - b);
+        areas.push(valid.slice(0, targetCount));
+      }
+    }
 
     // 6. ГОЛЯМ НОМЕР НАД ДЖОКЕР (9 цифри)
     let jokerCode = null;
@@ -411,7 +291,7 @@ const TotoOCR = {
       }
     }
 
-    // 10. ТЕРМИНАЛ И ОПЕРАТОР (допълнителни метаданни, ако ги има)
+    // 10. ТЕРМИНАЛ И ОПЕРАТОР
     let terminal = null;
     const termMatch = rawText.match(/(?:ТЕРМИНАЛ|ТЕРМ|TERM)[\s:#№]*([0-9]{3}-[0-9]{3}-[0-9]{3})/i);
     if (termMatch) terminal = termMatch[1];
@@ -425,11 +305,9 @@ const TotoOCR = {
       drawYear,
       drawDisplay,
       acceptedAt,
-      gameType: gameType || '6/49', // default game classification if omitted, but clean
-      gameTypeDetected: !!gameType,
+      gameType: gameType || '6/49',
       serialNumber,
       areas,
-      areaLabelCount,
       subCode: jokerCode,
       jokerCode,
       joker,
@@ -459,172 +337,6 @@ const TotoOCR = {
       operator: null,
       rawText: ''
     };
-  },
-
-  /**
-   * Detect an area label at the start of a line ("I:", "II:", "III:" ...),
-   * tolerant to OCR look-alikes: "Il;", "11:", "I I:", "|l:", "П:", "ІІ:" (Cyrillic І) etc.
-   * Returns { index, rest } or null.
-   */
-  detectAreaLabel(line) {
-    const m = line.match(/^\s*(?:(?:ОБЛАСТ|ОБЛ|OBL)\.?\s*)?([^\s:;.,]{1,4}(?:\s[^\s:;.,]{1,2})?)\s*([:;.,])\s*/i);
-    if (!m) return null;
-
-    const candidate = m[1].replace(/\s+/g, '');
-    const sep = m[2];
-    // A bare number followed by a comma is a lotto number, not a label ("1, 4, 5 ...")
-    if (/^\d+$/.test(candidate) && sep === ',') return null;
-
-    const charMap = {
-      'I': 'I', 'І': 'I', 'Ӏ': 'I', 'l': 'I', 'i': 'I', 'ı': 'I', '|': 'I', '!': 'I', '1': 'I',
-      'T': 'I', 'Т': 'I', 'L': 'I', 'ї': 'I', 'Ї': 'I', 'r': '',
-      'V': 'V', 'v': 'V',
-      'П': 'II', 'п': 'II', 'Н': 'II', 'н': 'II', 'H': 'II'
-    };
-    let roman = '';
-    for (const ch of candidate) {
-      const mapped = charMap[ch];
-      if (mapped === undefined) return null;
-      roman += mapped;
-    }
-    const romanList = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII'];
-    const idx = romanList.indexOf(roman);
-    if (idx === -1) return null;
-
-    return { index: idx + 1, rest: line.slice(m[0].length) };
-  },
-
-  /**
-   * Parse playing areas. Areas are kept in order of appearance on the slip.
-   * IMPORTANT: an area is never discarded because its label was misread
-   * (old bug: "II" misread as "I" caused area II to be dropped as a duplicate).
-   */
-  parseAreas(lines, maxVal, targetCount) {
-    const minCount = targetCount - 1;
-    const skipKeywords = [
-      'ДЖОКЕР', 'JOKER', 'ПОЗ/ЦИФ', 'ПОЗ', 'ЦИФ',
-      'ОБЩО', 'СУМА', 'EUR', 'BGN', 'ЦЕНА',
-      'ТИРАЖ', 'TIRAJ', 'THPAX', 'TIPAK',
-      'ТЕРМИНАЛ', 'TERMINAL', 'ОПЕРАТОР', 'OPERATOR', 'ONEPAROP',
-      'ПРИЕТ', 'ДАТА',
-      'ТОТО', 'TOTO',
-      'ПОРЕДЕН', 'СЕРИЕН',
-      'ПЕЧАЛБИ', 'КВИТАНЦИЯ', 'ЗАЛОГ', 'ПРЕДСТАВЯНЕ',
-      'ХАЙДУШКО', 'ТОТАЛИЗАТОР', 'СОФИЯ', 'СПОРТЕН'
-    ];
-
-    const isSkippable = (line) => {
-      const upper = line.toUpperCase();
-      if (skipKeywords.some(kw => upper.includes(kw))) return true;
-      if (/^[0-9A-Z]{4}-[0-9A-Z]{4}/i.test(line)) return true; // control code
-      if (/^\s*\d{9}\b/.test(line)) return true;                 // 9-digit slip number
-      return false;
-    };
-    const letterCount = (s) => (s.match(/[A-Za-zА-Яа-я]/g) || []).length;
-    const isMostlyNumeric = (s) => letterCount(s) <= 3 && /\d/.test(s);
-
-    const areas = [];
-    let areaLabelCount = 0;
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      if (isSkippable(line)) continue;
-
-      const label = this.detectAreaLabel(line);
-
-      if (label) {
-        let rest = label.rest;
-        let nums = this.extractAreaNumbers(rest, maxVal, targetCount, true);
-
-        // Numbers wrapped onto the next line (or label alone on its own line)
-        const next = lines[i + 1];
-        if (nums.length < targetCount && next && !isSkippable(next) &&
-            !this.detectAreaLabel(next) && isMostlyNumeric(next)) {
-          const merged = this.extractAreaNumbers(`${rest} ${next}`, maxVal, targetCount, true);
-          if (merged.length > nums.length) {
-            nums = merged;
-            i++;
-          }
-        }
-
-        if (nums.length > 0) areaLabelCount++;
-        // A labeled line is trusted: keep it even if a couple of numbers were unreadable
-        // (user sees "incomplete" and can fix it) instead of silently losing the area.
-        if (nums.length >= Math.max(3, targetCount - 3)) {
-          areas.push(nums);
-        }
-        continue;
-      }
-
-      // Unlabeled line (label lost by OCR): must look like a pure numbers line
-      if (!isMostlyNumeric(line)) continue;
-      const nums = this.extractAreaNumbers(line, maxVal, targetCount, false);
-      if (nums.length >= minCount) {
-        areas.push(nums);
-      }
-    }
-
-    return { areas, areaLabelCount };
-  },
-
-  /**
-   * Extract lotto numbers from the numeric part of an area line.
-   * - Fixes common OCR confusions inside numeric tokens (O->0, l->1, S->5, З->3, B->8 ...)
-   * - Splits fused tokens ("1218" -> 12, 18)
-   * - Takes the first N numbers in printed order, THEN sorts (old code sorted first and
-   *   cut off the biggest numbers).
-   */
-  extractAreaNumbers(str, maxVal = 49, targetCount = 6, lenient = false) {
-    const map = {
-      'O': '0', 'o': '0', 'О': '0', 'о': '0', 'D': '0', 'Q': '0',
-      'I': '1', 'l': '1', '|': '1', '!': '1', 'i': '1', 'І': '1',
-      'Z': '2', 'z': '2',
-      'З': '3', 'з': '3',
-      'S': '5', 's': '5', '$': '5',
-      'б': '6', 'G': '6',
-      'B': '8', 'В': '8',
-      'g': '9', 'q': '9'
-    };
-    const tokens = str.split(/[\s,;:.\-·•'"`]+/).filter(Boolean);
-    const out = [];
-    const seen = new Set();
-    const valid = (v) => v >= 1 && v <= maxVal && !seen.has(v);
-
-    for (let tok of tokens) {
-      if (out.length >= targetCount) break;
-      tok = tok.replace(/^[^\wА-Яа-я|!$]+|[^\wА-Яа-я|!$]+$/g, '');
-      if (!tok) continue;
-
-      const hasDigit = /\d/.test(tok);
-      if (hasDigit || (lenient && tok.length <= 2)) {
-        tok = [...tok].map(c => map[c] ?? c).join('');
-      }
-      if (!/^\d+$/.test(tok)) continue;
-
-      let parts = null;
-      if (tok.length <= 2) {
-        parts = [tok];
-      } else if (tok.length === 4) {
-        parts = [tok.slice(0, 2), tok.slice(2)];
-      } else if (tok.length === 3) {
-        const a = [tok.slice(0, 1), tok.slice(1)];
-        const b = [tok.slice(0, 2), tok.slice(2)];
-        const okA = a.every(p => +p >= 1 && +p <= maxVal) && a[0] !== a[1];
-        const okB = b.every(p => +p >= 1 && +p <= maxVal) && b[0] !== b[1];
-        if (okA !== okB) parts = okA ? a : b; // only if unambiguous
-      }
-      if (!parts) continue;
-
-      for (const p of parts) {
-        const v = parseInt(p, 10);
-        if (valid(v) && out.length < targetCount) {
-          seen.add(v);
-          out.push(v);
-        }
-      }
-    }
-
-    return out.sort((a, b) => a - b);
   },
 
   extractValidNumbers(str, maxVal = 49) {

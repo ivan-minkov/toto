@@ -394,28 +394,36 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
-  // Core Image Processing Pipeline - 100% Dynamic (multi-pass OCR)
+  // Core Image Processing Pipeline - 100% Dynamic, Fast & Robust
   async function processSlipImage(rawCanvas) {
     TotoOCR.playFeedback('shutter');
     showProcessing(true, 'Обработка на снимката...');
 
-    let slipData;
+    const cleanCanvas = TotoOCR.preprocessImage(rawCanvas);
+    const barcodePromise = TotoOCR.scanBarcode(cleanCanvas);
+
+    let rawOcrText = '';
     if (typeof Tesseract !== 'undefined') {
       try {
-        slipData = await TotoOCR.scanSlip(rawCanvas, (msg) => {
-          processingStep.textContent = msg;
+        const worker = await TotoOCR.initTesseract((p) => {
+          processingStep.textContent = `Разпознаване: ${p}%`;
         });
+        if (worker) {
+          const res = await worker.recognize(cleanCanvas);
+          rawOcrText = res?.data?.text || '';
+          console.log('--- DYNAMIC OCR OUTPUT ---\n' + rawOcrText);
+        }
       } catch (e) {
-        console.warn('OCR error during dynamic scan:', e);
+        console.warn('OCR recognition error:', e);
       }
     }
-    if (!slipData) {
-      slipData = TotoOCR.parseReceiptText('');
-      const barcode = await TotoOCR.scanBarcode(rawCanvas);
-      if (barcode) slipData.controlNumber = barcode;
-    }
 
-    window.lastOcrText = slipData.rawText || '';
+    window.lastOcrText = rawOcrText;
+    const slipData = TotoOCR.parseReceiptText(rawOcrText);
+    const barcode = await barcodePromise;
+    if (barcode && !slipData.controlNumber) {
+      slipData.controlNumber = barcode;
+    }
 
     showProcessing(false);
     displaySlipResults(slipData);

@@ -160,10 +160,20 @@ const TotoScanner = {
         img.src = url;
       });
     }
+
+    const MAX_DIM = 1600;
+    let w = source.width;
+    let h = source.height;
+    if (w > MAX_DIM || h > MAX_DIM) {
+      const scale = MAX_DIM / Math.max(w, h);
+      w = Math.round(w * scale);
+      h = Math.round(h * scale);
+    }
+
     const canvas = document.createElement('canvas');
-    canvas.width = source.width;
-    canvas.height = source.height;
-    canvas.getContext('2d').drawImage(source, 0, 0);
+    canvas.width = w;
+    canvas.height = h;
+    canvas.getContext('2d').drawImage(source, 0, 0, w, h);
     if (source.close) source.close();
     return canvas;
   },
