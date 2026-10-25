@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 450 780" width="450" height="780">
+  <!-- Thermal paper background with subtle orange watermark pattern -->
+  <rect width="450" height="780" fill="#ffffff" />
+  
+  <g font-family="'Courier New', monospace, 'Lucida Console'" fill="#111" text-anchor="middle">
+    <text x="225" y="60" font-size="16" font-weight="bold">Български Спортен Тотализатор</text>
+    <text x="225" y="85" font-size="14">София 1618, ул. Хайдушко Изворче 28</text>
+  </g>
+
+  <g font-family="'Courier New', monospace, 'Lucida Console'" fill="#111" font-size="13">
+    <text x="30" y="130">Тираж: 71/2026</text>
+    <text x="230" y="130">Терминал: 101-001-008</text>
+    <text x="30" y="155">Приет: 09.09.2026 18:45</text>
+    <text x="230" y="155">Оператор: 101-002</text>
+  </g>
+
+  <g font-family="'Courier New', monospace, 'Lucida Console'" fill="#111" text-anchor="middle">
+    <text x="225" y="210" font-size="22" font-weight="900" letter-spacing="2">TOTO2 6/49</text>
+    <text x="225" y="240" font-size="14" font-weight="bold">Пореден #: 0000000110</text>
+  </g>
+
+  <!-- Areas I and II -->
+  <g font-family="'Courier New', monospace, 'Lucida Console'" fill="#111" font-size="17" font-weight="bold">
+    <text x="50" y="285">I:  9, 12, 18, 21, 22, 32</text>
+    <text x="50" y="315">II: 4,  5, 18, 23, 34, 39</text>
+  </g>
+
+  <!-- Big 9-digit Joker code -->
+  <g font-family="'Courier New', monospace, 'Lucida Console'" fill="#111" text-anchor="middle">
+    <text x="225" y="375" font-size="24" font-weight="900" letter-spacing="4">835878258</text>
+  </g>
+
+  <!-- Joker positions / digits -->
+  <g font-family="'Courier New', monospace, 'Lucida Console'" fill="#111" font-size="14">
+    <text x="30" y="425">Джокер (поз/циф): 1/8, 4/8, 6/8</text>
+  </g>
+
+  <!-- Total Price -->
+  <g font-family="'Courier New', monospace, 'Lucida Console'" fill="#111" font-size="18" font-weight="900">
+    <text x="30" y="475">ОБЩО :</text>
+    <text x="320" y="475">2.00 EUR</text>
+  </g>
+
+  <g font-family="'Courier New', monospace, 'Lucida Console'" fill="#333" font-size="13" text-anchor="middle">
+    <text x="225" y="525">Печалби се изплащат при представяне</text>
+    <text x="225" y="548">на валидна квитанция за залог.</text>
+  </g>
+
+  <!-- Control Number -->
+  <g font-family="'Courier New', monospace, 'Lucida Console'" fill="#111" text-anchor="middle">
+    <text x="225" y="600" font-size="15" font-weight="bold" letter-spacing="1">9763-A2C0-468D-5E27-000A-83A0</text>
+  </g>
+</svg>

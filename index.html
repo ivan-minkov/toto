@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="bg">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Тото Скенер</title>
+  <meta name="theme-color" content="#000000">
+
+  <link rel="manifest" href="manifest.json">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+
+  <!-- Google Fonts: Outfit & Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700;800;900&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="css/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+</head>
+<body class="camera-mode">
+
+  <!-- Header is only visible in Results view -->
+  <header class="app-header" id="app-header" style="display: none;">
+    <div class="header-container">
+      <div class="logo-area" id="logo-home-btn">
+        <div class="logo-icon">🎟️</div>
+        <div class="logo-text">
+          <h1>ТОТО ПРОВЕРКА</h1>
+          <span class="subtitle">Резултат от фиша</span>
+        </div>
+      </div>
+      <button class="header-action-btn" id="header-scan-btn">
+        <span>📸 Нов фиш</span>
+      </button>
+    </div>
+  </header>
+
+  <main class="app-content">
+
+    <!-- ==========================================
+         VIEW 1: PURE CAMERA ONLY (FULLSCREEN)
+         ========================================== -->
+    <section class="view-section active" id="view-scanner">
+      <div class="camera-fullscreen-container">
+        <!-- Live Video Stream -->
+        <video id="camera-stream" playsinline autoplay muted></video>
+
+        <!-- Framing Viewfinder Guide -->
+        <div class="viewfinder-guide">
+          <div class="guide-bottom-corners"></div>
+          <div class="laser-line"></div>
+        </div>
+
+        <!-- Fallback Card if Live Stream is Blocked on Mobile HTTP -->
+        <div class="camera-fallback-card" id="camera-fallback-card" style="display: none;">
+          <div class="fallback-icon">📷</div>
+          <h3>Снимай фиша</h3>
+          <p>Натиснете бутона по-долу или кръглия спусък, за да заснемете квитанцията с камерата на телефона.</p>
+          <button class="btn-primary" id="open-native-cam-btn" style="width: 100%; justify-content: center; padding: 14px 20px; font-size: 1rem;">
+            <span>📸 Отвори камерата</span>
+          </button>
+        </div>
+
+        <!-- Native Mobile Camera Input with capture="environment" -->
+        <input type="file" id="native-camera-input" accept="image/*" capture="environment" style="display: none;">
+
+        <!-- Top Floating Camera Controls -->
+        <div class="camera-top-bar">
+          <button class="icon-btn" id="torch-btn" title="Фенерче">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+          </button>
+          <button class="icon-btn" id="switch-cam-btn" title="Смени камера">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path></svg>
+          </button>
+        </div>
+
+        <!-- Bottom Shutter & Gallery Controls -->
+        <div class="camera-bottom-bar">
+          <input type="file" id="file-upload-input" accept="image/*" style="display: none;">
+          <button class="gallery-round-btn" id="upload-btn" title="Качи от галерия">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>
+          </button>
+
+          <!-- Native-like Camera Shutter -->
+          <button class="shutter-trigger" id="capture-btn" title="Сканирай квитанция">
+            <div class="shutter-inner"></div>
+          </button>
+
+          <div style="width: 48px;"></div>
+        </div>
+
+        <!-- Processing Overlay -->
+        <div class="processing-overlay" id="processing-overlay">
+          <div class="scanner-radar"></div>
+          <div class="processing-title">Сканиране...</div>
+          <div class="processing-step" id="processing-step">Разпознаване на квитанцията...</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==========================================
+         VIEW 2: RESULT & SLIP DATA (AFTER SCAN)
+         ========================================== -->
+    <section class="view-section" id="view-result">
+      
+      <!-- Big Win / Loss Status Banner with Exact Won Amount -->
+      <div class="status-banner" id="status-banner">
+        <div class="status-icon" id="status-icon">🎉</div>
+        <div class="status-text-group">
+          <div class="status-title" id="status-title">ФИШЪТ ПЕЧЕЛИ: 14.30 лв.!</div>
+          <div class="status-detail" id="status-detail">Тройка (14.30 лв.) в Област 1</div>
+        </div>
+      </div>
+
+      <!-- Optional Warning Banner if any field is unreadable -->
+      <div class="unreadable-alert-banner" id="unreadable-alert-banner" style="display: none;">
+        <span style="font-size: 1.2rem;">⚠️</span>
+        <span>Някои данни не се четат ясно. Кликнете върху <b>⚠️</b>, за да ги коригирате.</span>
+      </div>
+
+      <!-- Scanned Receipt Data Card (All 9 items) -->
+      <div class="slip-details-card">
+        
+        <div class="card-section-title">
+          <span>📋 ДАННИ ОТ КВИТАНЦИЯТА</span>
+        </div>
+
+        <div class="receipt-grid">
+          <!-- 1. Тираж -->
+          <div class="receipt-field">
+            <span class="field-label">Тираж:</span>
+            <div class="field-value highlight-gold">
+              <span id="res-draw-display">71/2026</span>
+              <button class="edit-pill-btn" id="change-draw-btn" title="Промени тиража">✏️ Промени</button>
+            </div>
+          </div>
+
+          <!-- 2. Приет (Дата/Час) -->
+          <div class="receipt-field">
+            <span class="field-label">Приет:</span>
+            <span class="field-value" id="res-accepted-at">09.09.2026 18:45</span>
+          </div>
+
+          <!-- 3. Тип на тото -->
+          <div class="receipt-field">
+            <span class="field-label">Тип тото:</span>
+            <div class="field-value">
+              <span id="res-game-type" style="font-weight:700;">TOTO2 6/49</span>
+              <button class="edit-pill-btn" id="change-game-btn" title="Промени играта">✏️ Игра</button>
+            </div>
+          </div>
+
+          <!-- 4. Пореден # -->
+          <div class="receipt-field">
+            <span class="field-label">Пореден #:</span>
+            <span class="field-value font-mono" id="res-serial-num">0000000110</span>
+          </div>
+
+          <!-- 6. Номер на фиша (9 цифри) -->
+          <div class="receipt-field">
+            <span class="field-label">Номер на фиша:</span>
+            <span class="field-value font-mono" id="res-sub-code">835878258</span>
+          </div>
+
+          <!-- 8. Общо (сума на фиша) -->
+          <div class="receipt-field">
+            <span class="field-label">Общо (сума):</span>
+            <span class="field-value font-bold" id="res-total-price">5.60 лв.</span>
+          </div>
+
+          <!-- 7. Джокер (поз/циф) -->
+          <div class="receipt-field full-row">
+            <span class="field-label">Тото Джокер:</span>
+            <span class="field-value" id="res-joker-display">Позиции: 4 6 9 &nbsp;|&nbsp; Цифри: 0 1 8</span>
+          </div>
+
+          <!-- 9. Контролен номер -->
+          <div class="receipt-field full-row control-box">
+            <span class="field-label">Контролен номер:</span>
+            <div style="display:flex; justify-content:space-between; align-items:center; width:100%; margin-top:4px; flex-wrap:wrap; gap:8px;">
+              <span class="field-value font-mono" id="res-control-num">D712-4412-9921-3012-7491-0112</span>
+              <div style="display:flex; align-items:center; gap:6px;">
+                <button class="copy-pill-btn" id="copy-code-btn" title="Копирай контролния номер">Копирай</button>
+                <button class="copy-pill-btn verify-toto-btn" id="verify-toto-btn" title="Провери в официалния сайт на БСТ">🌐 Провери в toto.bg</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="divider"></div>
+
+        <!-- 5. Числата от различните тиражи / области -->
+        <div style="display:flex; justify-content:space-between; align-items:center; width:100%;">
+          <div class="card-section-title">
+            <span>🎯 ЧИСЛА ПО ОБЛАСТИ:</span>
+          </div>
+          <button class="edit-pill-btn" id="add-new-area-btn" title="Добави нова област">➕ Добави област</button>
+        </div>
+        <div class="slip-areas-container" id="res-areas-container"></div>
+
+        <div class="divider"></div>
+
+        <!-- Official Draw Numbers reference -->
+        <div class="draw-reference-row">
+          <div style="display:flex; justify-content:space-between; align-items:center; width:100%; margin-bottom:6px; flex-wrap:wrap; gap:6px;">
+            <span class="draw-ref-label" id="res-official-label">Официално изтеглени числа за тиража:</span>
+            <button class="edit-pill-btn" id="change-draw-numbers-btn" title="Промени официално изтеглените числа">✏️ Числа</button>
+          </div>
+          <div class="mini-balls-row" id="res-official-balls"></div>
+        </div>
+
+      </div>
+
+      <!-- Action Button: Scan New Slip -->
+      <div class="bottom-action-container">
+        <button class="btn-scan-again" id="scan-again-btn">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path><circle cx="12" cy="13" r="4"></circle></svg>
+          <span>Сканирай нов фиш</span>
+        </button>
+      </div>
+
+    </section>
+
+  </main>
+
+  <!-- Toast Notification -->
+  <div class="toast-notice" id="toast-notice">
+    <span id="toast-message"></span>
+  </div>
+
+  <!-- App Scripts with cache busting -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations().then(regs => {
+        for (let reg of regs) reg.unregister();
+      });
+    }
+  </script>
+  <script src="js/ocr.js?v=18"></script>
+  <script src="js/scanner.js?v=18"></script>
+  <script src="js/toto-checker.js?v=18"></script>
+  <script src="js/app.js?v=18"></script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+<USER_REQUEST>
+при тестовете искам вместо да снимаш с камерата да ползваш тази снимка, за да се обучаваш. Може да ми казваш какво си сканирал, за да ти кажа дали е правилно.
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-10-25T14:18:22+02:00.
+
+The user's current state is as follows:
+Active Document: c:\Users\User\Projects\toto\data\draws.json (LANGUAGE_JSON)
+Cursor is on line: 1
+Other open documents:
+- c:\Users\User\Projects\toto\js\history.js (LANGUAGE_JAVASCRIPT)
+- c:\Users\User\Projects\toto\js\app.js (LANGUAGE_JAVASCRIPT)
+- c:\Users\User\Projects\toto\data\draws.json (LANGUAGE_JSON)
+- c:\Users\User\Projects\toto\css\style.css (LANGUAGE_CSS)
+- c:\Users\User\Projects\toto\js\ocr.js (LANGUAGE_JAVASCRIPT)
+Browser State:
+  Page 0315EFE135051AC0EDB5EDE1751C5391 (Тото Скенер) - http://localhost:8080/?v=7 [ACTIVE]
+    Viewport: 502x706, Page Height: 836
+</ADDITIONAL_METADATA>
