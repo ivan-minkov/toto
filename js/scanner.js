@@ -122,27 +122,58 @@ const TotoScanner = {
   },
 
   /**
+   * Capture a full-resolution still photo (sensor resolution, autofocus) when the
+   * browser supports ImageCapture (Chrome/Android). Falls back to a video frame.
+   */
+  async capturePhoto() {
+    if (this.track && 'ImageCapture' in window) {
+      try {
+        const ic = new window.ImageCapture(this.track);
+        const blob = await Promise.race([
+          ic.takePhoto(),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('takePhoto timeout')), 4000))
+        ]);
+        const canvas = await this.blobToCanvas(blob);
+        if (canvas && canvas.width >= (this.videoEl?.videoWidth || 0)) return canvas;
+      } catch (e) {
+        console.warn('ImageCapture.takePhoto failed, using video frame:', e);
+      }
+    }
+    return this.captureFrame();
+  },
+
+  async blobToCanvas(blob) {
+    let source;
+    if ('createImageBitmap' in window) {
+      try {
+        source = await createImageBitmap(blob, { imageOrientation: 'from-image' });
+      } catch (e) {
+        source = null;
+      }
+    }
+    if (!source) {
+      source = await new Promise((resolve, reject) => {
+        const url = URL.createObjectURL(blob);
+        const img = new Image();
+        img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+        img.onerror = (e) => { URL.revokeObjectURL(url); reject(e); };
+        img.src = url;
+      });
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = source.width;
+    canvas.height = source.height;
+    canvas.getContext('2d').drawImage(source, 0, 0);
+    if (source.close) source.close();
+    return canvas;
+  },
+
+  /**
    * Load image file from gallery / file input into canvas
    */
   loadImageFromFile(file) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const img = new Image();
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          canvas.width = img.width;
-          canvas.height = img.height;
-          const ctx = canvas.getContext('2d');
-          ctx.drawImage(img, 0, 0);
-          resolve(canvas);
-        };
-        img.onerror = reject;
-        img.src = e.target.result;
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
+    // Object URL / ImageBitmap instead of base64 data URL: far less memory for 12MP phone photos
+    return this.blobToCanvas(file);
   },
 
   /**

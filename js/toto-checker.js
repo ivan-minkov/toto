@@ -16,7 +16,71 @@ const TotoChecker = {
     } catch (e) {
       console.warn('Failed to fetch draws.json dynamically:', e);
     }
+    if (!this.db || !this.db.games) {
+      this.db = { games: {} };
+    }
+    this.loadCachedDraws();
     return this.db;
+  },
+
+  loadCachedDraws() {
+    try {
+      const cached = localStorage.getItem('toto_cached_draws');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        for (const [gameKey, drawsList] of Object.entries(parsed)) {
+          if (!this.db.games[gameKey]) {
+            this.db.games[gameKey] = { draws: [] };
+          }
+          if (!Array.isArray(this.db.games[gameKey].draws)) {
+            this.db.games[gameKey].draws = [];
+          }
+          for (const d of drawsList) {
+            const idx = this.db.games[gameKey].draws.findIndex(x => x.number === d.number);
+            if (idx >= 0) {
+              this.db.games[gameKey].draws[idx] = { ...this.db.games[gameKey].draws[idx], ...d, hasNumbers: true };
+            } else {
+              this.db.games[gameKey].draws.unshift({ ...d, hasNumbers: true });
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Error loading cached draws:', e);
+    }
+  },
+
+  saveCustomDraw(gameKey, drawObj) {
+    if (!this.db || !this.db.games) return;
+    const key = this.normalizeGameKey(gameKey);
+    if (!this.db.games[key]) {
+      this.db.games[key] = { draws: [] };
+    }
+    const list = this.db.games[key].draws || [];
+    const item = { ...drawObj, hasNumbers: true };
+    const idx = list.findIndex(d => d.number === drawObj.number);
+    if (idx >= 0) {
+      list[idx] = item;
+    } else {
+      list.unshift(item);
+    }
+    list.sort((a, b) => (b.number || 0) - (a.number || 0));
+
+    try {
+      let cached = {};
+      const raw = localStorage.getItem('toto_cached_draws');
+      if (raw) cached = JSON.parse(raw);
+      if (!cached[key]) cached[key] = [];
+      const cIdx = cached[key].findIndex(d => d.number === drawObj.number);
+      if (cIdx >= 0) {
+        cached[key][cIdx] = item;
+      } else {
+        cached[key].unshift(item);
+      }
+      localStorage.setItem('toto_cached_draws', JSON.stringify(cached));
+    } catch (e) {
+      console.warn('Failed to save to localStorage:', e);
+    }
   },
 
   normalizeGameKey(gameId = '6/49') {
@@ -40,7 +104,12 @@ const TotoChecker = {
     if (drawNumber !== null && drawNumber !== undefined && drawNumber !== '') {
       const num = parseInt(drawNumber, 10);
       const found = game.draws.find(d => d.number === num);
-      if (found) return found;
+      if (found) {
+        const has = (found.hasNumbers !== undefined)
+          ? found.hasNumbers
+          : ((found.winningNumbers?.length || 0) > 0 || (found.winningNumbers1?.length || 0) > 0);
+        return { ...found, hasNumbers: has };
+      }
 
       // Draw number not found in database: return placeholder indicating no drawn numbers yet
       return {
@@ -56,7 +125,133 @@ const TotoChecker = {
       };
     }
 
-    return game.draws[0] || null;
+    const first = game.draws[0];
+    if (!first) return null;
+    const has = (first.hasNumbers !== undefined)
+      ? first.hasNumbers
+      : ((first.winningNumbers?.length || 0) > 0 || (first.winningNumbers1?.length || 0) > 0);
+    return { ...first, hasNumbers: has };
+  },
+
+  /**
+   * Dynamically fetch missing draw results online via CORS proxies and mirrors
+   */
+  async fetchDrawOnline(gameId = '6/49', drawNumber = null, drawYear = null) {
+    if (!drawNumber) return null;
+    const num = parseInt(drawNumber, 10);
+    if (isNaN(num) || num < 1 || num > 104) return null;
+
+    const gameKey = this.normalizeGameKey(gameId);
+    const year = drawYear || new Date().getFullYear();
+
+    const existing = this.getDraw(gameKey, num);
+    if (existing && existing.hasNumbers) {
+      return existing;
+    }
+
+    const targetUrl = `https://info.toto.bg/results/${gameKey}/${year}-${num}`;
+    const proxyUrls = [
+      `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`,
+      `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`
+    ];
+
+    for (const pUrl of proxyUrls) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 6000);
+        const resp = await fetch(pUrl, { signal: controller.signal });
+        clearTimeout(timeoutId);
+
+        if (!resp.ok) continue;
+
+        let html = '';
+        if (pUrl.includes('allorigins.win/get')) {
+          const json = await resp.json();
+          html = json.contents || '';
+        } else {
+          html = await resp.text();
+        }
+
+        if (!html || html.includes('Radware') || html.includes('Captcha')) {
+          continue;
+        }
+
+        const parsed = this.parseDrawHtml(html, gameKey, num, year);
+        if (parsed && parsed.hasNumbers) {
+          this.saveCustomDraw(gameKey, parsed);
+          return parsed;
+        }
+      } catch (err) {
+        console.warn(`Draw online fetch failed for ${pUrl}:`, err);
+      }
+    }
+
+    return null;
+  },
+
+  parseDrawHtml(html, gameKey, num, year) {
+    if (!html) return null;
+
+    const dateMatch = html.match(/class="tir_title"[^>]*>\s*Тираж\s*\d+\s*-\s*([0-9.]+)/i);
+    const date = dateMatch ? dateMatch[1] : `Тираж № ${num} (${year} г.)`;
+
+    const ballMatches = html.match(/class="ball-white"[^>]*>(\d+)<\/span>/gi) || [];
+    const balls = ballMatches.map(m => {
+      const v = m.match(/>(\d+)</);
+      return v ? parseInt(v[1], 10) : null;
+    }).filter(n => n !== null);
+
+    if (balls.length === 0) return null;
+
+    let jackpot = 'Няма данни';
+    const jm = html.match(/class="tir_jackpot"[\s\S]*?class="col-sm-6 sum text-right">\s*([0-9\s.,]+)/i);
+    if (jm) jackpot = jm[1].trim() + ' EUR';
+
+    let joker = null;
+    const jokerMatch = html.match(/джокер[\s\S]*?(\d)\s*[\/]\s*(\d)/gi);
+    if (jokerMatch) {
+      const pos = [];
+      const dig = [];
+      jokerMatch.slice(0, 3).forEach(jStr => {
+        const parts = jStr.match(/(\d)\s*[\/]\s*(\d)/);
+        if (parts) {
+          pos.push(parseInt(parts[1], 10));
+          dig.push(parseInt(parts[2], 10));
+        }
+      });
+      if (pos.length > 0) {
+        joker = { positions: pos, digits: dig, prizesNumeric: { '3': 9470, '2': 35 } };
+      }
+    }
+
+    if (gameKey === '5x35') {
+      const balls1 = balls.slice(0, 5).sort((a, b) => a - b);
+      const balls2 = balls.slice(5, 10).sort((a, b) => a - b);
+      return {
+        number: num,
+        date,
+        winningNumbers1: balls1,
+        winningNumbers2: balls2,
+        jackpot,
+        currency: 'EUR',
+        hasNumbers: (balls1.length > 0 || balls2.length > 0),
+        prizesNumeric: { '5': 90000, '4': 250, '3': 10 },
+        joker
+      };
+    } else {
+      const targetCount = 6;
+      const winNums = balls.slice(0, targetCount).sort((a, b) => a - b);
+      return {
+        number: num,
+        date,
+        winningNumbers: winNums,
+        jackpot,
+        currency: 'EUR',
+        hasNumbers: winNums.length > 0,
+        prizesNumeric: { '6': 4000000, '5': 2000, '4': 40, '3': 7 },
+        joker
+      };
+    }
   },
 
   /**

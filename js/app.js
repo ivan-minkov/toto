@@ -7,6 +7,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Initialize Database dynamically
   await TotoChecker.init();
 
+  // Pre-warm the OCR engine in the background (downloads ~10MB language data once)
+  // so the first scan doesn't wait for it.
+  TotoOCR.initTesseract();
+
   let currentSlip = null;
 
   // Header & Views
@@ -216,8 +220,9 @@ document.addEventListener('DOMContentLoaded', async () => {
           draw.winningNumbers1 = nums1;
           draw.winningNumbers2 = nums2;
           draw.hasNumbers = (nums1.length > 0 || nums2.length > 0);
+          TotoChecker.saveCustomDraw(gameKey, draw);
           displaySlipResults(currentSlip);
-          showToast('Изтеглените числа за 5/35 бяха обновени!');
+          showToast('Изтеглените числа за 5/35 бяха запазени!');
         }
       }
     } else {
@@ -227,8 +232,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         const nums = TotoOCR.extractValidNumbers(inp, maxVal);
         draw.winningNumbers = nums;
         draw.hasNumbers = nums.length > 0;
+        TotoChecker.saveCustomDraw(gameKey, draw);
         displaySlipResults(currentSlip);
-        showToast('Официално изтеглените числа бяха обновени!');
+        showToast('Официално изтеглените числа бяха запазени!');
       }
     }
   }
@@ -338,9 +344,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       return;
     }
 
-    // 2. If live WebRTC camera is streaming, capture frame directly
+    // 2. If live WebRTC camera is streaming, capture a full-resolution still (falls back to video frame)
     if (TotoScanner.isLiveActive) {
-      const canvas = TotoScanner.captureFrame();
+      const canvas = await TotoScanner.capturePhoto();
       if (canvas) {
         await processSlipImage(canvas);
         return;
@@ -388,42 +394,30 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
-  // Core Image Processing Pipeline - 100% Dynamic
+  // Core Image Processing Pipeline - 100% Dynamic (multi-pass OCR)
   async function processSlipImage(rawCanvas) {
     TotoOCR.playFeedback('shutter');
     showProcessing(true, 'Обработка на снимката...');
 
-    const cleanCanvas = TotoOCR.preprocessImage(rawCanvas);
-    const barcode = await TotoOCR.scanBarcode(cleanCanvas);
-
-    let rawOcrText = '';
-
+    let slipData;
     if (typeof Tesseract !== 'undefined') {
       try {
-        const worker = await TotoOCR.initTesseract((p) => {
-          processingStep.textContent = `Разпознаване: ${p}%`;
+        slipData = await TotoOCR.scanSlip(rawCanvas, (msg) => {
+          processingStep.textContent = msg;
         });
-        if (worker) {
-          const res = await worker.recognize(cleanCanvas);
-          rawOcrText = res.data.text || '';
-          console.log('--- DYNAMIC OCR OUTPUT ---\n' + rawOcrText);
-        }
       } catch (e) {
         console.warn('OCR error during dynamic scan:', e);
       }
     }
-
-    // Dynamic parsing strictly from OCR text
-    window.lastOcrText = rawOcrText;
-    const slipData = TotoOCR.parseReceiptText(rawOcrText);
-
-    if (barcode && !slipData.controlNumber) {
-      slipData.controlNumber = barcode;
+    if (!slipData) {
+      slipData = TotoOCR.parseReceiptText('');
+      const barcode = await TotoOCR.scanBarcode(rawCanvas);
+      if (barcode) slipData.controlNumber = barcode;
     }
 
-    await new Promise(r => setTimeout(r, 200));
-    showProcessing(false);
+    window.lastOcrText = slipData.rawText || '';
 
+    showProcessing(false);
     displaySlipResults(slipData);
   }
 
@@ -615,7 +609,36 @@ document.addEventListener('DOMContentLoaded', async () => {
       statusBanner.className = 'status-banner no-win';
       statusIcon.textContent = '⏳';
       statusTitle.textContent = `ТИРАЖ № ${slip.drawNum} (ОЧАКВА СЕ)`;
-      statusDetail.textContent = 'Официалните резултати за този тираж все още не са изтеглени или въведени в базата.';
+
+      if (!slip._isFetchingDraw) {
+        slip._isFetchingDraw = true;
+        statusDetail.textContent = `Сваляне на резултатите за Тираж № ${slip.drawNum} от интернет...`;
+        
+        TotoChecker.fetchDrawOnline(gameKey, slip.drawNum, slip.drawYear).then(newDraw => {
+          slip._isFetchingDraw = false;
+          if (newDraw && newDraw.hasNumbers) {
+            showToast(`Резултатите за Тираж № ${slip.drawNum} бяха изтеглени успешно!`);
+            displaySlipResults(slip);
+          } else {
+            statusDetail.innerHTML = `
+              <span>Резултатите за този тираж още не са налични онлайн.</span>
+              <div style="margin-top:8px; display:flex; gap:8px; justify-content:center; flex-wrap:wrap;">
+                <button class="edit-pill-btn" id="retry-fetch-btn" style="padding:4px 10px;">🔄 Свали отново</button>
+                <button class="edit-pill-btn" id="manual-numbers-btn" style="padding:4px 10px;">✏️ Въведи числа</button>
+              </div>
+            `;
+            document.getElementById('retry-fetch-btn')?.addEventListener('click', () => {
+              slip._isFetchingDraw = false;
+              fetchMissingDrawNow(slip);
+            });
+            document.getElementById('manual-numbers-btn')?.addEventListener('click', () => {
+              editOfficialDrawnNumbers();
+            });
+          }
+        }).catch(() => {
+          slip._isFetchingDraw = false;
+        });
+      }
     } else if (report.isTotalWin) {
       TotoOCR.playFeedback('win');
       statusBanner.className = 'status-banner is-win';
@@ -799,8 +822,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
             draw.joker.positions = pos;
             draw.joker.digits = dig;
+            TotoChecker.saveCustomDraw(gameKey, draw);
             displaySlipResults(currentSlip);
-            showToast('Изтегленият Джокер бе обновен!');
+            showToast('Изтегленият Джокер бе запазен!');
           }
         }
       });
@@ -808,5 +832,24 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Switch view
     showResultView();
+  }
+
+  async function fetchMissingDrawNow(slip) {
+    if (!slip || !slip.drawNum) return;
+    const gameKey = TotoChecker.normalizeGameKey(slip.gameType || '6/49');
+    showProcessing(true, `Сваляне на данни за Тираж № ${slip.drawNum}...`);
+    try {
+      const res = await TotoChecker.fetchDrawOnline(gameKey, slip.drawNum, slip.drawYear);
+      showProcessing(false);
+      if (res && res.hasNumbers) {
+        showToast(`Тираж № ${slip.drawNum} бе изтеглен успешно!`);
+        displaySlipResults(slip);
+      } else {
+        showToast('Тиражът не бе намерен онлайн.');
+      }
+    } catch (e) {
+      showProcessing(false);
+      showToast('Грешка при сваляне.');
+    }
   }
 });
